@@ -6,29 +6,31 @@ import socket
 import threading
 import time
 import errno
+import os
+import csv
+import pandas as pd
 from collections import defaultdict
 
 # Configuration
 HOST = "0.0.0.0"
 PORT = 4444
+CSV_DIR = "metrics_data"  # Directory to store CSV files
+if not os.path.exists(CSV_DIR):
+    os.makedirs(CSV_DIR)
 
-# Initialize data storage for metrics
-data = defaultdict(lambda: {
-    "time": [],
-    "memory_usage": [],
-    "memory_max": [],
-    "cpu_usage": [],
-    "disk_io": [],
-    "net_rx": [],
-    "net_tx": []
-})
-time_counter = 0  # Simulated time counter for x-axis
+# Mapping of node names to colors
+NODE_COLORS = {
+    "grs-node-1": "blue",
+    "grs-node-2": "green",
+    "grs-node-3": "red"
+}
+
+# Lock for thread-safe file access
+file_lock = threading.Lock()
 listener_running = False  # Flag to prevent multiple listener threads
+time_counter = 0  # Simulated time counter for x-axis
 
-# Lock for thread-safe access to the data dictionary
-data_lock = threading.Lock()
-
-# Function to parse a single line of incoming data
+# Function to parse a single line of incoming data and save to CSV
 def parse_line(line):
     global time_counter
     print(f"parse_line called with line: {line}")  # Debug log
@@ -51,25 +53,40 @@ def parse_line(line):
         net_rx = int(net_rx)
         net_tx = int(net_tx)
 
-        # Initialize the node in the data dictionary
-        with data_lock:  # Ensure thread-safe access
-            _ = data[node]  # Trigger defaultdict initialization for the node
-            print(f"Initialized data for node: {node}")  # Debug log
+        # Create CSV file path for this node
+        csv_path = os.path.join(CSV_DIR, f"{node}.csv")
 
-            # Only append data if the time_counter is not already present
-            if time_counter not in data[node]["time"]:
-                data[node]["time"].append(time_counter)
-                data[node]["memory_usage"].append(mem_used)
-                data[node]["memory_max"].append(mem_max)
-                data[node]["cpu_usage"].append(cpu_usage)
-                data[node]["disk_io"].append(disk_io)
-                data[node]["net_rx"].append(net_rx)
-                data[node]["net_tx"].append(net_tx)
-                print(f"Updated data for {node}: {data[node]}")  # Debug log
+        # Check if file exists to determine if we need headers
+        file_exists = os.path.isfile(csv_path)
+
+        # Write data to CSV file
+        with file_lock:
+            with open(csv_path, 'a', newline='') as csvfile:
+                fieldnames = ['time', 'memory_usage', 'memory_max', 'cpu_usage', 'disk_io', 'net_rx', 'net_tx']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                # Write header if file is new
+                if not file_exists:
+                    writer.writeheader()
+
+                # Write data row
+                writer.writerow({
+                    'time': time_counter,
+                    'memory_usage': mem_used,
+                    'memory_max': mem_max,
+                    'cpu_usage': cpu_usage,
+                    'disk_io': disk_io,
+                    'net_rx': net_rx,
+                    'net_tx': net_tx
+                })
+
+            print(f"Saved data for {node} at time {time_counter}")
 
     except ValueError as e:
         # Handle any parsing errors
         print(f"Error parsing line: {line}, Error: {e}")
+    except Exception as e:
+        print(f"Error saving to CSV: {e}")
 
 # Function to listen for incoming data on the specified port
 def listen_for_data():
@@ -102,10 +119,15 @@ def listen_for_data():
                 with client_socket:
                     while True:
                         try:
-                            data_chunk = client_socket.recv(1024).decode("utf-8")
-                            if not data_chunk:
+                            data_chunk = client_socket.recv(1024)
+                            try:
+                                decoded_data = data_chunk.decode("utf-8")
+                            except UnicodeDecodeError as e:
+                                print(f"Decoding error: {e}")
+                                continue
+                            if not decoded_data:
                                 break
-                            for line in data_chunk.splitlines():
+                            for line in decoded_data.splitlines():
                                 parse_line(line)
                         except Exception as e:
                             print(f"Error receiving data: {e}")
@@ -116,6 +138,46 @@ def listen_for_data():
         print(f"Error in listener thread: {e}")
     finally:
         listener_running = False  # Reset the flag when the thread exits
+
+# Function to read data from CSV files
+def read_node_data():
+    node_data = {}
+
+    # Check if directory exists
+    if not os.path.exists(CSV_DIR):
+        return node_data
+
+    # List all CSV files in the directory
+    csv_files = [f for f in os.listdir(CSV_DIR) if f.endswith('.csv')]
+
+    for csv_file in csv_files:
+        try:
+            node_name = os.path.splitext(csv_file)[0]  # Extract node name from filename
+            file_path = os.path.join(CSV_DIR, csv_file)
+
+            with file_lock:
+                # Read CSV file into DataFrame
+                df = pd.read_csv(file_path)
+
+                if not df.empty:
+                    # Limit to last 200 data points for performance
+                    if len(df) > 200:
+                        df = df.tail(200)
+
+                    # Convert DataFrame to dictionary format for plotting
+                    node_data[node_name] = {
+                        'time': df['time'].tolist(),
+                        'memory_usage': df['memory_usage'].tolist(),
+                        'memory_max': df['memory_max'].tolist(),
+                        'cpu_usage': df['cpu_usage'].tolist(),
+                        'disk_io': df['disk_io'].tolist(),
+                        'net_rx': df['net_rx'].tolist(),
+                        'net_tx': df['net_tx'].tolist()
+                    }
+        except Exception as e:
+            print(f"Error reading {csv_file}: {e}")
+
+    return node_data
 
 # Start the listener in a separate thread
 listener_thread = threading.Thread(target=listen_for_data, daemon=True)
@@ -149,48 +211,54 @@ app.layout = html.Div([
 def update_plots(n_intervals):
     print(f"update_plots called with n_intervals: {n_intervals}")  # Debug log
 
+    # Read data from CSV files
+    data = read_node_data()
+
+    # Check if any data has been loaded
+    if not data:
+        return go.Figure(), go.Figure(), go.Figure(), go.Figure()
+
     memory_fig = go.Figure()
     cpu_fig = go.Figure()
     disk_fig = go.Figure()
     network_fig = go.Figure()
 
-    with data_lock:  # Ensure thread-safe access
-        print(f"Data keys in update_plots: {list(data.keys())}")  # Debug log
-        for node in data.keys():
-            values = data[node]
-            time_to_plot = values["time"][-200:] if len(values["time"]) > 200 else values["time"]
+    for node in data.keys():
+        print(f"Plotting data for {node}")  # Debug log
+        values = data[node]
 
-            # Memory Usage Subplot
-            memory_fig.add_trace(go.Scatter(
-                x=time_to_plot, y=values["memory_usage"][-200:],
-                mode='lines', name=f"{node} Memory Usage (KB)"
-            ))
-            memory_fig.add_trace(go.Scatter(
-                x=time_to_plot, y=values["memory_max"][-200:],
-                mode='lines', name=f"{node} Memory Max (KB)", line=dict(dash='dash')
-            ))
+        # Memory Usage Subplot
+        color = NODE_COLORS.get(node, 'black')  # Default to black if not found
+        memory_fig.add_trace(go.Scatter(
+            x=values["time"], y=values["memory_usage"],
+            mode='lines', name=f"{node} Memory Usage (KB)", line=dict(color=color)
+        ))
+        memory_fig.add_trace(go.Scatter(
+            x=values["time"], y=values["memory_max"],
+            mode='lines', name=f"{node} Memory Max (KB)", line=dict(dash='dash', color=color)
+        ))
 
-            # CPU Usage Subplot
-            cpu_fig.add_trace(go.Scatter(
-                x=time_to_plot, y=values["cpu_usage"][-200:],
-                mode='lines', name=f"{node} CPU Usage (%)"
-            ))
+        # CPU Usage Subplot
+        cpu_fig.add_trace(go.Scatter(
+            x=values["time"], y=values["cpu_usage"],
+            mode='lines', name=f"{node} CPU Usage (%)", line=dict(color=color)
+        ))
 
-            # Disk I/O Subplot
-            disk_fig.add_trace(go.Scatter(
-                x=time_to_plot, y=values["disk_io"][-200:],
-                mode='lines', name=f"{node} Disk I/O (KB/s)"
-            ))
+        # Disk I/O Subplot
+        disk_fig.add_trace(go.Scatter(
+            x=values["time"], y=values["disk_io"],
+            mode='lines', name=f"{node} Disk I/O (KB/s)", line=dict(color=color)
+        ))
 
-            # Network Metrics Subplot
-            network_fig.add_trace(go.Scatter(
-                x=time_to_plot, y=values["net_rx"][-200:],
-                mode='lines', name=f"{node} Network RX (Bytes)"
-            ))
-            network_fig.add_trace(go.Scatter(
-                x=time_to_plot, y=values["net_tx"][-200:],
-                mode='lines', name=f"{node} Network TX (Bytes)"
-            ))
+        # Network Metrics Subplot
+        network_fig.add_trace(go.Scatter(
+            x=values["time"], y=values["net_rx"],
+            mode='lines', name=f"{node} Network RX (Bytes)", line=dict(color=color)
+        ))
+        network_fig.add_trace(go.Scatter(
+            x=values["time"], y=values["net_tx"],
+            mode='lines', name=f"{node} Network TX (Bytes)", line=dict(color=color, dash='dot')
+        ))
 
     # Update layout for each subplot
     memory_fig.update_layout(

@@ -8,4 +8,5 @@ dependencies = [
     "dash>=3.0.3",
     "libvirt-python>=11.2.0",
     "matplotlib>=3.10.1",
+    "pandas>=2.2.3",
 ]
