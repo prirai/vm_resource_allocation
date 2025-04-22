@@ -10,6 +10,7 @@ import os
 import csv
 import pandas as pd
 from collections import defaultdict
+import libvirt
 
 # Configuration
 HOST = "0.0.0.0"
@@ -17,6 +18,21 @@ PORT = 4444
 CSV_DIR = "metrics_data"  # Directory to store CSV files
 if not os.path.exists(CSV_DIR):
     os.makedirs(CSV_DIR)
+
+# RAM scaling configuration
+RAM_INCREMENT_HIGH_MB = 100  # Amount of RAM to increase when usage > 80% (in MB)
+RAM_INCREMENT_LOW_MB = 500   # Amount of RAM to decrease when usage < 20% (in MB)
+RAM_INCREMENT_HIGH_KB = RAM_INCREMENT_HIGH_MB * 1024  # Convert to KB
+RAM_INCREMENT_LOW_KB = RAM_INCREMENT_LOW_MB * 1024    # Convert to KB
+THRESHOLD_HIGH_PERCENT = 80  # High memory usage threshold
+THRESHOLD_LOW_PERCENT = 20   # Low memory usage threshold
+
+# Mapping of node names to domain names (for libvirt)
+NODE_TO_DOMAIN = {
+    "grs-node-1": "grs-project-1",
+    "grs-node-2": "grs-project-2",
+    "grs-node-3": "grs-project-3",
+}
 
 # Mapping of node names to colors
 NODE_COLORS = {
@@ -29,6 +45,67 @@ NODE_COLORS = {
 file_lock = threading.Lock()
 listener_running = False  # Flag to prevent multiple listener threads
 time_counter = 0  # Simulated time counter for x-axis
+
+# Connect to libvirt (session-based)
+try:
+    conn = libvirt.open("qemu:///session")
+    if conn is None:
+        print("Failed to open connection to qemu:///session")
+    else:
+        print("Successfully connected to libvirt")
+        # List all domains
+        domains = conn.listAllDomains()
+        print("List of all domains:")
+        for domain in domains:
+            print(f"Name: {domain.name()}, ID: {domain.ID()}, State: {domain.state()[0]}")
+except Exception as e:
+    print(f"Error connecting to libvirt: {e}")
+    conn = None
+
+# Function to adjust RAM for a domain
+def adjust_ram(node, increase=True, increment=RAM_INCREMENT_HIGH_KB):
+    if conn is None:
+        print("Cannot adjust RAM: No libvirt connection")
+        return
+
+    if node not in NODE_TO_DOMAIN:
+        print(f"Unknown node: {node}")
+        return
+
+    domain_name = NODE_TO_DOMAIN[node].strip()  # Ensure no trailing/leading whitespace
+    print(f"Looking up domain: '{domain_name}'")
+
+    try:
+        domain = conn.lookupByName(domain_name)
+        if domain is None:
+            print(f"Domain {domain_name} not found")
+            return
+
+        # Get the current memory allocation
+        current_memory = domain.info()[2]  # Current memory in KB
+        max_memory = domain.info()[1]  # Max memory in KB
+
+        if increase:
+            # Ensure we don't exceed the maximum memory
+            new_memory = current_memory + increment
+            if new_memory > max_memory:
+                print(f"Cannot increase memory for {domain_name}: New memory ({new_memory // 1024} MB) exceeds max memory ({max_memory // 1024} MB)")
+                return
+            print(f"Increasing memory for {domain_name} from {current_memory // 1024} MB to {new_memory // 1024} MB")
+        else:
+            # Ensure we don't decrease below a reasonable minimum (e.g., 512 MB)
+            new_memory = current_memory - increment
+            if new_memory < 512 * 1024:  # 512 MB in KB
+                print(f"Cannot decrease memory for {domain_name}: New memory ({new_memory // 1024} MB) is below the minimum allowed (512 MB)")
+                return
+            print(f"Decreasing memory for {domain_name} from {current_memory // 1024} MB to {new_memory // 1024} MB")
+
+        # Set the new current memory allocation
+        domain.setMemoryFlags(new_memory, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+    except libvirt.libvirtError as e:
+        print(f"Failed to adjust memory for {domain_name}: {e}")
+    except Exception as e:
+        print(f"Error adjusting memory: {e}")
 
 # Function to parse a single line of incoming data and save to CSV
 def parse_line(line):
@@ -52,6 +129,15 @@ def parse_line(line):
         disk_io = float(disk_io)
         net_rx = int(net_rx)
         net_tx = int(net_tx)
+
+        # Check if memory usage exceeds the high threshold for RAM scaling
+        if mem_used * 100 / mem_max > THRESHOLD_HIGH_PERCENT:
+            print(f"Memory usage is high for {node} ({mem_used}/{mem_max} KB). Increasing RAM...")
+            adjust_ram(node, increase=True, increment=RAM_INCREMENT_HIGH_KB)
+        # Check if memory usage is below the low threshold for RAM scaling
+        elif mem_used * 100 / mem_max < THRESHOLD_LOW_PERCENT:
+            print(f"Memory usage is low for {node} ({mem_used}/{mem_max} KB). Decreasing RAM...")
+            adjust_ram(node, increase=False, increment=RAM_INCREMENT_LOW_KB)
 
         # Create CSV file path for this node
         csv_path = os.path.join(CSV_DIR, f"{node}.csv")
@@ -187,7 +273,14 @@ listener_thread.start()
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-    html.H1("System Metrics Dashboard", style={'textAlign': 'center'}),
+    html.H1("System Metrics Dashboard with Auto RAM Scaling", style={'textAlign': 'center'}),
+    html.Div([
+        html.Div([
+            html.H3("RAM Scaling Configuration", style={'textAlign': 'center'}),
+            html.P(f"High threshold: {THRESHOLD_HIGH_PERCENT}% - Increase by {RAM_INCREMENT_HIGH_MB} MB"),
+            html.P(f"Low threshold: {THRESHOLD_LOW_PERCENT}% - Decrease by {RAM_INCREMENT_LOW_MB} MB"),
+        ], style={'padding': '10px', 'backgroundColor': '#f0f0f0', 'borderRadius': '5px', 'marginBottom': '20px'})
+    ]),
     dcc.Graph(id='memory-usage-graph'),
     dcc.Graph(id='cpu-usage-graph'),
     dcc.Graph(id='disk-io-graph'),
@@ -240,6 +333,26 @@ def update_plots(n_intervals):
             fill='tonexty', fillpattern=dict(shape='x')  # Add cross-hatching
         ))
 
+        # Add threshold lines to memory figure
+        x_range = values["time"]
+        if x_range:
+            # High threshold line
+            memory_fig.add_shape(
+                type="line",
+                x0=min(x_range), y0=max(values["memory_max"]) * THRESHOLD_HIGH_PERCENT / 100,
+                x1=max(x_range), y1=max(values["memory_max"]) * THRESHOLD_HIGH_PERCENT / 100,
+                line=dict(color="red", width=1, dash="dot"),
+                name=f"High Threshold ({THRESHOLD_HIGH_PERCENT}%)"
+            )
+            # Low threshold line
+            memory_fig.add_shape(
+                type="line",
+                x0=min(x_range), y0=max(values["memory_max"]) * THRESHOLD_LOW_PERCENT / 100,
+                x1=max(x_range), y1=max(values["memory_max"]) * THRESHOLD_LOW_PERCENT / 100,
+                line=dict(color="green", width=1, dash="dot"),
+                name=f"Low Threshold ({THRESHOLD_LOW_PERCENT}%)"
+            )
+
         # CPU Usage Subplot
         cpu_fig.add_trace(go.Scatter(
             x=values["time"], y=values["cpu_usage"],
@@ -265,7 +378,7 @@ def update_plots(n_intervals):
 
     # Update layout for each subplot
     memory_fig.update_layout(
-        title="Memory Usage Over Time",
+        title="Memory Usage Over Time (with Auto-Scaling Thresholds)",
         xaxis_title="Time (seconds)",
         yaxis_title="Memory Usage (KB)",
         height=600,  # Increased height for better visualization
