@@ -1,0 +1,1 @@
+echo "ps aux | grep report_memory | cut -d' ' -f2 | head -n -1 | xargs kill" > killer.sh
