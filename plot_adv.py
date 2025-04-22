@@ -226,16 +226,18 @@ def update_plots(n_intervals):
     for node in data.keys():
         print(f"Plotting data for {node}")  # Debug log
         values = data[node]
-
-        # Memory Usage Subplot
         color = NODE_COLORS.get(node, 'black')  # Default to black if not found
+
+        # Memory Usage Subplot with cross-hatching
         memory_fig.add_trace(go.Scatter(
             x=values["time"], y=values["memory_usage"],
-            mode='lines', name=f"{node} Memory Usage (KB)", line=dict(color=color)
+            mode='lines', name=f"{node} Current Usage", line=dict(color=color)
         ))
         memory_fig.add_trace(go.Scatter(
             x=values["time"], y=values["memory_max"],
-            mode='lines', name=f"{node} Memory Max (KB)", line=dict(dash='dash', color=color)
+            mode='lines', name=f"{node} Max Usage",
+            line=dict(color=color, dash='dash'),
+            fill='tonexty', fillpattern=dict(shape='x')  # Add cross-hatching
         ))
 
         # CPU Usage Subplot
@@ -257,7 +259,8 @@ def update_plots(n_intervals):
         ))
         network_fig.add_trace(go.Scatter(
             x=values["time"], y=values["net_tx"],
-            mode='lines', name=f"{node} Network TX (Bytes)", line=dict(color=color, dash='dot')
+            mode='lines', name=f"{node} Network TX (Bytes)",
+            line=dict(color=color, dash='dot')
         ))
 
     # Update layout for each subplot
@@ -265,7 +268,7 @@ def update_plots(n_intervals):
         title="Memory Usage Over Time",
         xaxis_title="Time (seconds)",
         yaxis_title="Memory Usage (KB)",
-        height=400,
+        height=600,  # Increased height for better visualization
         legend_title="Nodes"
     )
 
