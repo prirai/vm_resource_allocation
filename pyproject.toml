@@ -1,0 +1,11 @@
+[project]
+name = "grs-project-last-phase"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dash>=3.0.3",
+    "libvirt-python>=11.2.0",
+    "matplotlib>=3.10.1",
+]
