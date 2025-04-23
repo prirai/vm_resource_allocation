@@ -11,49 +11,50 @@ import csv
 import pandas as pd
 from collections import defaultdict
 import libvirt
+import glob
 
-# Configuration
 HOST = "0.0.0.0"
 PORT = 4444
-CSV_DIR = "metrics_data"  # Directory to store CSV files
+CSV_DIR = "metrics_data"
 if not os.path.exists(CSV_DIR):
     os.makedirs(CSV_DIR)
 
-# RAM scaling configuration
-RAM_INCREMENT_HIGH_MB = 100  # Amount of RAM to increase when usage > 80% (in MB)
-RAM_INCREMENT_LOW_MB = 500   # Amount of RAM to decrease when usage < 20% (in MB)
-RAM_INCREMENT_HIGH_KB = RAM_INCREMENT_HIGH_MB * 1024  # Convert to KB
-RAM_INCREMENT_LOW_KB = RAM_INCREMENT_LOW_MB * 1024    # Convert to KB
-THRESHOLD_HIGH_PERCENT = 80  # High memory usage threshold
-THRESHOLD_LOW_PERCENT = 20   # Low memory usage threshold
+RAM_INCREMENT_HIGH_MB = 100
+RAM_INCREMENT_LOW_MB = 500
+RAM_INCREMENT_HIGH_KB = RAM_INCREMENT_HIGH_MB * 1024
+RAM_INCREMENT_LOW_KB = RAM_INCREMENT_LOW_MB * 1024
+THRESHOLD_HIGH_PERCENT = 80
+THRESHOLD_LOW_PERCENT = 20
 
-# Mapping of node names to domain names (for libvirt)
+CPU_THRESHOLD_HIGH_PERCENT = 90
+CPU_THRESHOLD_LOW_PERCENT = 30
+MAX_CPU_CORES = 2
+MIN_CPU_CORES = 1
+
 NODE_TO_DOMAIN = {
     "grs-node-1": "grs-project-1",
     "grs-node-2": "grs-project-2",
     "grs-node-3": "grs-project-3",
 }
 
-# Mapping of node names to colors
 NODE_COLORS = {
     "grs-node-1": "blue",
     "grs-node-2": "green",
     "grs-node-3": "red"
 }
 
-# Lock for thread-safe file access
 file_lock = threading.Lock()
-listener_running = False  # Flag to prevent multiple listener threads
-time_counter = 0  # Simulated time counter for x-axis
+listener_running = False
+time_counter = 0
 
-# Connect to libvirt (session-based)
+[os.remove(f) for f in glob.glob("metrics_data/grs-node-*")]
+
 try:
     conn = libvirt.open("qemu:///session")
     if conn is None:
         print("Failed to open connection to qemu:///session")
     else:
         print("Successfully connected to libvirt")
-        # List all domains
         domains = conn.listAllDomains()
         print("List of all domains:")
         for domain in domains:
@@ -62,8 +63,15 @@ except Exception as e:
     print(f"Error connecting to libvirt: {e}")
     conn = None
 
-# Function to adjust RAM for a domain
 def adjust_ram(node, increase=True, increment=RAM_INCREMENT_HIGH_KB):
+    """
+    Adjusts the RAM allocation for a given node's domain.
+
+    Args:
+        node (str): The node name.
+        increase (bool): Whether to increase or decrease RAM.
+        increment (int): The amount of RAM to adjust in KB.
+    """
     if conn is None:
         print("Cannot adjust RAM: No libvirt connection")
         return
@@ -72,7 +80,7 @@ def adjust_ram(node, increase=True, increment=RAM_INCREMENT_HIGH_KB):
         print(f"Unknown node: {node}")
         return
 
-    domain_name = NODE_TO_DOMAIN[node].strip()  # Ensure no trailing/leading whitespace
+    domain_name = NODE_TO_DOMAIN[node].strip()
     print(f"Looking up domain: '{domain_name}'")
 
     try:
@@ -81,47 +89,99 @@ def adjust_ram(node, increase=True, increment=RAM_INCREMENT_HIGH_KB):
             print(f"Domain {domain_name} not found")
             return
 
-        # Get the current memory allocation
-        current_memory = domain.info()[2]  # Current memory in KB
-        max_memory = domain.info()[1]  # Max memory in KB
+        current_memory = domain.info()[2]
+        max_memory = domain.info()[1]
 
         if increase:
-            # Ensure we don't exceed the maximum memory
             new_memory = current_memory + increment
             if new_memory > max_memory:
                 print(f"Cannot increase memory for {domain_name}: New memory ({new_memory // 1024} MB) exceeds max memory ({max_memory // 1024} MB)")
                 return
             print(f"Increasing memory for {domain_name} from {current_memory // 1024} MB to {new_memory // 1024} MB")
         else:
-            # Ensure we don't decrease below a reasonable minimum (e.g., 512 MB)
             new_memory = current_memory - increment
-            if new_memory < 512 * 1024:  # 512 MB in KB
+            if new_memory < 512 * 1024:
                 print(f"Cannot decrease memory for {domain_name}: New memory ({new_memory // 1024} MB) is below the minimum allowed (512 MB)")
                 return
             print(f"Decreasing memory for {domain_name} from {current_memory // 1024} MB to {new_memory // 1024} MB")
 
-        # Set the new current memory allocation
         domain.setMemoryFlags(new_memory, libvirt.VIR_DOMAIN_AFFECT_LIVE)
     except libvirt.libvirtError as e:
         print(f"Failed to adjust memory for {domain_name}: {e}")
     except Exception as e:
         print(f"Error adjusting memory: {e}")
 
-# Function to parse a single line of incoming data and save to CSV
-def parse_line(line):
-    global time_counter
-    print(f"parse_line called with line: {line}")  # Debug log
+def adjust_cpu_cores(node, increase=True):
+    """
+    Adjusts the number of CPU cores for a given node's domain.
 
-    # Normalize whitespace and split the line
-    parts = line.strip().split()
+    Args:
+        node (str): The node name.
+        increase (bool): Whether to increase or decrease CPU cores.
+    """
+    if conn is None:
+        print("Cannot adjust CPU cores: No libvirt connection")
+        return
 
-    # Ensure the line has exactly 7 parts
-    if len(parts) != 7:
-        print(f"Malformed line: {line}")  # Debug log
-        return  # Skip malformed lines
+    if node not in NODE_TO_DOMAIN:
+        print(f"Unknown node: {node}")
+        return
+
+    domain_name = NODE_TO_DOMAIN[node].strip()
+    print(f"Looking up domain for CPU adjustment: '{domain_name}'")
 
     try:
-        # Parse the fields
+        domain = conn.lookupByName(domain_name)
+        if domain is None:
+            print(f"Domain {domain_name} not found")
+            return
+
+        xml_desc = domain.XMLDesc(0)
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(xml_desc)
+        vcpu_element = root.find('./vcpu')
+
+        if vcpu_element is not None:
+            current_vcpus = int(vcpu_element.text or 0)
+            print(f"Current vCPUs for {domain_name}: {current_vcpus}")
+
+            if increase and current_vcpus < MAX_CPU_CORES:
+                new_vcpus = current_vcpus + 1
+                print(f"Increasing vCPUs for {domain_name} from {current_vcpus} to {new_vcpus}")
+            elif not increase and current_vcpus > MIN_CPU_CORES:
+                new_vcpus = current_vcpus - 1
+                print(f"Decreasing vCPUs for {domain_name} from {current_vcpus} to {new_vcpus}")
+            else:
+                print(f"No CPU adjustment needed for {domain_name}: Already at {'maximum' if increase else 'minimum'} cores")
+                return
+
+            domain.setVcpusFlags(new_vcpus, libvirt.VIR_DOMAIN_AFFECT_LIVE)
+            print(f"Successfully adjusted vCPUs for {domain_name} to {new_vcpus}")
+        else:
+            print(f"Could not find vcpu element in domain XML for {domain_name}")
+
+    except libvirt.libvirtError as e:
+        print(f"Failed to adjust CPU cores for {domain_name}: {e}")
+    except Exception as e:
+        print(f"Error adjusting CPU cores: {e}")
+
+def parse_line(line):
+    """
+    Parses a single line of incoming data and saves it to a CSV file.
+
+    Args:
+        line (str): The incoming data line.
+    """
+    global time_counter
+    print(f"parse_line called with line: {line}")
+
+    parts = line.strip().split()
+
+    if len(parts) != 7:
+        print(f"Malformed line: {line}")
+        return
+
+    try:
         node, mem_used, mem_max, cpu_usage, disk_io, net_rx, net_tx = parts
         mem_used = int(mem_used)
         mem_max = int(mem_max)
@@ -130,32 +190,31 @@ def parse_line(line):
         net_rx = int(net_rx)
         net_tx = int(net_tx)
 
-        # Check if memory usage exceeds the high threshold for RAM scaling
         if mem_used * 100 / mem_max > THRESHOLD_HIGH_PERCENT:
             print(f"Memory usage is high for {node} ({mem_used}/{mem_max} KB). Increasing RAM...")
             adjust_ram(node, increase=True, increment=RAM_INCREMENT_HIGH_KB)
-        # Check if memory usage is below the low threshold for RAM scaling
         elif mem_used * 100 / mem_max < THRESHOLD_LOW_PERCENT:
             print(f"Memory usage is low for {node} ({mem_used}/{mem_max} KB). Decreasing RAM...")
             adjust_ram(node, increase=False, increment=RAM_INCREMENT_LOW_KB)
 
-        # Create CSV file path for this node
-        csv_path = os.path.join(CSV_DIR, f"{node}.csv")
+        if cpu_usage > CPU_THRESHOLD_HIGH_PERCENT:
+            print(f"CPU usage is high for {node} ({cpu_usage}%). Adding CPU core...")
+            adjust_cpu_cores(node, increase=True)
+        elif cpu_usage < CPU_THRESHOLD_LOW_PERCENT:
+            print(f"CPU usage is low for {node} ({cpu_usage}%). Removing CPU core...")
+            adjust_cpu_cores(node, increase=False)
 
-        # Check if file exists to determine if we need headers
+        csv_path = os.path.join(CSV_DIR, f"{node}.csv")
         file_exists = os.path.isfile(csv_path)
 
-        # Write data to CSV file
         with file_lock:
             with open(csv_path, 'a', newline='') as csvfile:
                 fieldnames = ['time', 'memory_usage', 'memory_max', 'cpu_usage', 'disk_io', 'net_rx', 'net_tx']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
-                # Write header if file is new
                 if not file_exists:
                     writer.writeheader()
 
-                # Write data row
                 writer.writerow({
                     'time': time_counter,
                     'memory_usage': mem_used,
@@ -169,13 +228,16 @@ def parse_line(line):
             print(f"Saved data for {node} at time {time_counter}")
 
     except ValueError as e:
-        # Handle any parsing errors
         print(f"Error parsing line: {line}, Error: {e}")
     except Exception as e:
         print(f"Error saving to CSV: {e}")
 
-# Function to listen for incoming data on the specified port
 def listen_for_data():
+    """
+    Listens for incoming data on the specified port and processes it.
+
+    This function runs in a separate thread.
+    """
     global time_counter, listener_running
     if listener_running:
         print("Listener thread is already running. Exiting.")
@@ -184,7 +246,6 @@ def listen_for_data():
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-            # Set socket options to reuse the port
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 server_socket.bind((HOST, PORT))
@@ -192,9 +253,9 @@ def listen_for_data():
                 if e.errno == errno.EADDRINUSE:
                     print(f"Port {PORT} is already in use. Exiting listener thread.")
                     listener_running = False
-                    return  # Exit the thread if the port is already in use
+                    return
                 else:
-                    raise  # Re-raise other exceptions
+                    raise
 
             server_socket.listen(5)
             print(f"Listening for connections on {HOST}:{PORT}...")
@@ -218,39 +279,39 @@ def listen_for_data():
                         except Exception as e:
                             print(f"Error receiving data: {e}")
                             break
-                time_counter += 1  # Increment time counter after processing each connection
-                print(f"Time counter incremented to {time_counter}")  # Debug log
+                time_counter += 1
+                print(f"Time counter incremented to {time_counter}")
     except Exception as e:
         print(f"Error in listener thread: {e}")
     finally:
-        listener_running = False  # Reset the flag when the thread exits
+        listener_running = False
 
-# Function to read data from CSV files
 def read_node_data():
+    """
+    Reads data from CSV files and returns it in a dictionary format.
+
+    Returns:
+        dict: A dictionary containing node data for plotting.
+    """
     node_data = {}
 
-    # Check if directory exists
     if not os.path.exists(CSV_DIR):
         return node_data
 
-    # List all CSV files in the directory
     csv_files = [f for f in os.listdir(CSV_DIR) if f.endswith('.csv')]
 
     for csv_file in csv_files:
         try:
-            node_name = os.path.splitext(csv_file)[0]  # Extract node name from filename
+            node_name = os.path.splitext(csv_file)[0]
             file_path = os.path.join(CSV_DIR, csv_file)
 
             with file_lock:
-                # Read CSV file into DataFrame
                 df = pd.read_csv(file_path)
 
                 if not df.empty:
-                    # Limit to last 200 data points for performance
                     if len(df) > 200:
                         df = df.tail(200)
 
-                    # Convert DataFrame to dictionary format for plotting
                     node_data[node_name] = {
                         'time': df['time'].tolist(),
                         'memory_usage': df['memory_usage'].tolist(),
@@ -265,29 +326,20 @@ def read_node_data():
 
     return node_data
 
-# Start the listener in a separate thread
 listener_thread = threading.Thread(target=listen_for_data, daemon=True)
 listener_thread.start()
 
-# Dash App Setup
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-    html.H1("System Metrics Dashboard with Auto RAM Scaling", style={'textAlign': 'center'}),
-    html.Div([
-        html.Div([
-            html.H3("RAM Scaling Configuration", style={'textAlign': 'center'}),
-            html.P(f"High threshold: {THRESHOLD_HIGH_PERCENT}% - Increase by {RAM_INCREMENT_HIGH_MB} MB"),
-            html.P(f"Low threshold: {THRESHOLD_LOW_PERCENT}% - Decrease by {RAM_INCREMENT_LOW_MB} MB"),
-        ], style={'padding': '10px', 'backgroundColor': '#f0f0f0', 'borderRadius': '5px', 'marginBottom': '20px'})
-    ]),
+    html.H1("System Metrics Dashboard", style={'textAlign': 'center'}),
     dcc.Graph(id='memory-usage-graph'),
     dcc.Graph(id='cpu-usage-graph'),
     dcc.Graph(id='disk-io-graph'),
     dcc.Graph(id='network-usage-graph'),
     dcc.Interval(
         id='interval-component',
-        interval=1000,  # Update every 1 second
+        interval=1000,
         n_intervals=0
     )
 ])
@@ -302,12 +354,19 @@ app.layout = html.Div([
     [Input('interval-component', 'n_intervals')]
 )
 def update_plots(n_intervals):
-    print(f"update_plots called with n_intervals: {n_intervals}")  # Debug log
+    """
+    Updates the plots for memory, CPU, disk I/O, and network usage.
 
-    # Read data from CSV files
+    Args:
+        n_intervals (int): The number of intervals that have passed.
+
+    Returns:
+        tuple: Updated figures for each graph.
+    """
+    print(f"update_plots called with n_intervals: {n_intervals}")
+
     data = read_node_data()
 
-    # Check if any data has been loaded
     if not data:
         return go.Figure(), go.Figure(), go.Figure(), go.Figure()
 
@@ -317,11 +376,10 @@ def update_plots(n_intervals):
     network_fig = go.Figure()
 
     for node in data.keys():
-        print(f"Plotting data for {node}")  # Debug log
+        print(f"Plotting data for {node}")
         values = data[node]
-        color = NODE_COLORS.get(node, 'black')  # Default to black if not found
+        color = NODE_COLORS.get(node, 'black')
 
-        # Memory Usage Subplot with cross-hatching
         memory_fig.add_trace(go.Scatter(
             x=values["time"], y=values["memory_usage"],
             mode='lines', name=f"{node} Current Usage", line=dict(color=color)
@@ -330,13 +388,11 @@ def update_plots(n_intervals):
             x=values["time"], y=values["memory_max"],
             mode='lines', name=f"{node} Max Usage",
             line=dict(color=color, dash='dash'),
-            fill='tonexty', fillpattern=dict(shape='x')  # Add cross-hatching
+            fill='tonexty', fillpattern=dict(shape='x')
         ))
 
-        # Add threshold lines to memory figure
         x_range = values["time"]
         if x_range:
-            # High threshold line
             memory_fig.add_shape(
                 type="line",
                 x0=min(x_range), y0=max(values["memory_max"]) * THRESHOLD_HIGH_PERCENT / 100,
@@ -344,7 +400,6 @@ def update_plots(n_intervals):
                 line=dict(color="red", width=1, dash="dot"),
                 name=f"High Threshold ({THRESHOLD_HIGH_PERCENT}%)"
             )
-            # Low threshold line
             memory_fig.add_shape(
                 type="line",
                 x0=min(x_range), y0=max(values["memory_max"]) * THRESHOLD_LOW_PERCENT / 100,
@@ -353,19 +408,16 @@ def update_plots(n_intervals):
                 name=f"Low Threshold ({THRESHOLD_LOW_PERCENT}%)"
             )
 
-        # CPU Usage Subplot
         cpu_fig.add_trace(go.Scatter(
             x=values["time"], y=values["cpu_usage"],
             mode='lines', name=f"{node} CPU Usage (%)", line=dict(color=color)
         ))
 
-        # Disk I/O Subplot
         disk_fig.add_trace(go.Scatter(
             x=values["time"], y=values["disk_io"],
             mode='lines', name=f"{node} Disk I/O (KB/s)", line=dict(color=color)
         ))
 
-        # Network Metrics Subplot
         network_fig.add_trace(go.Scatter(
             x=values["time"], y=values["net_rx"],
             mode='lines', name=f"{node} Network RX (Bytes)", line=dict(color=color)
@@ -376,12 +428,11 @@ def update_plots(n_intervals):
             line=dict(color=color, dash='dot')
         ))
 
-    # Update layout for each subplot
     memory_fig.update_layout(
-        title="Memory Usage Over Time (with Auto-Scaling Thresholds)",
+        title="Memory Usage Over Time",
         xaxis_title="Time (seconds)",
         yaxis_title="Memory Usage (KB)",
-        height=600,  # Increased height for better visualization
+        height=600,
         legend_title="Nodes"
     )
 

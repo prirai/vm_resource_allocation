@@ -1,0 +1,46 @@
+libvirt:
+    type: Web
+    title: The Virtualization API
+    url: https://libvirt.org/
+
+kvm:
+    type: Web
+    title: The Linux Kernel Virtual Machine Project
+    url: https://linux-kvm.org/page/Main_Page
+
+qemu:
+    type: Web
+    title: QEMU
+    url: https://qemu.org/
+
+ibm-vcpus:
+    type: Web
+    title: Modifying the number of virtual CPUs
+    url: https://www.ibm.com/docs/en/linux-on-systems?topic=cpus-modifying-number-virtual
+    publisher:
+      name: IBM
+
+ecp-proxy-apps:
+    type: Web
+    title: ECP Proxy Apps Suite
+    url: https://proxyapps.exascaleproject.org/ecp-proxy-apps-suite/
+
+hpccg:
+    type: Web
+    title: "High Performance Computing Conjugate Gradients: The original Mantevo miniapp"
+    url: https://github.com/Mantevo/HPCCG
+
+rsbench:
+    type: Web
+    title: "rsbench: A Neuro-Symbolic Benchmark Suite for Concept Quality and Reasoning Shortcuts"
+    url: https://unitn-sml.github.io/rsbench/
+
+simplemoc:
+    type: Web
+    title: "A 3D Method of Characteristics (MOC) reactor simulation Mini-App featuring MPI and OpenMP parallelism"
+    url: https://github.com/ANL-CESAR/SimpleMOC
+
+cohmm:
+    type: Web
+    title: Heterogeneous Multiscale Method
+    url: https://github.com/exmatex/CoHMM

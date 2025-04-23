@@ -1,0 +1,4 @@
+CPU usage is high for grs-node-3 (91.9411%). Adding CPU core...
+Looking up domain for CPU adjustment: 'grs-project-3'
+Current vCPUs for grs-project-3: 2
+No CPU adjustment needed for grs-project-3: Already at maximum cores
