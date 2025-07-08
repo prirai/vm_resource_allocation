@@ -115,28 +115,28 @@ The Dash-based dashboard provides real-time visualization of the collected metri
 - Comparative analysis of the performance impact of different workloads under varying resource constraints.
 
 #figure(
-    image("ram_usage.png")
+    image("img/ram_usage.png")
 )
 
 #figure(
-    image("cpu_usage.png", height: 100pt)
+    image("img/cpu_usage.png", height: 100pt)
 )
 
 #figure(
-    image("cpu2.png")
+    image("img/cpu2.png")
 )
 
 #figure(
-    image("io.png"),
+    image("img/io.png"),
 )
 
 #figure(
-    image("network.png")
+    image("img/network.png")
 )
 
 #grid(columns: 1fr, gutter: 1em)[
-  #image("Screenshot_20250422_230254.png", width: 50%)
-  #image("Screenshot_20250422_230314.png", width: 50%)
+  #image("img/Screenshot_20250422_230254.png", width: 50%)
+  #image("img/Screenshot_20250422_230314.png", width: 50%)
 ]
 
 
