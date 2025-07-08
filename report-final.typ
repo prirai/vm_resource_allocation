@@ -1,5 +1,7 @@
 #import "template.typ": *
+#import "@preview/fletcher:0.5.7" as fletcher: diagram, node, edge
 
+#import fletcher.shapes: diamond, house, hexagon
 #show: project.with(
   title: "Performance Analysis and Online Resource Management of a VM System",
   authors: (
@@ -29,7 +31,7 @@ The project focuses on analyzing resource utilization in virtualized environment
     - CPU core allocation using `virsh setvcpus` @ibm-vcpus.
     - Storage optimization using storage pooling and sharing strategies.
 
-= Project Structure
+= System Design
 
 The project is organized into the following components:
 
@@ -71,7 +73,7 @@ The project is organized into the following components:
 - *`README.md`:* Provides an overview of the project and instructions for setup and usage.
 - *`commands.txt`:* Contains useful `virsh` and `qemu-img` commands for managing the VMs.
 
-= Implementation Details
+== System Implementation
 
 == Dynamic Resource Management
 
@@ -84,6 +86,7 @@ The `plot_adv.py` script implements dynamic resource management using the follow
     - If CPU usage exceeds 90%, the script adds an additional CPU core (up to a maximum of 2 cores).
     - If CPU usage falls below 30%, the script removes a CPU core (down to a minimum of 1 core).
 
+= System Evaluation
 == Metrics Reporting
 
 The `report-memory.sh` script collects the following metrics from each VM:
@@ -111,12 +114,25 @@ The Dash-based dashboard provides real-time visualization of the collected metri
 - Dynamic resource management strategies to optimize VM performance.
 - Comparative analysis of the performance impact of different workloads under varying resource constraints.
 
-#grid(columns: 1fr, gutter: 1em)[
-  #image("Screenshot_20250422_225539.png")
-  #image("Screenshot_20250422_225424.png")
-  #image("Screenshot_20250422_225408.png")
-  #image("Screenshot_20250422_225558.png")
-]
+#figure(
+    image("ram_usage.png")
+)
+
+#figure(
+    image("cpu_usage.png", height: 100pt)
+)
+
+#figure(
+    image("cpu2.png")
+)
+
+#figure(
+    image("io.png"),
+)
+
+#figure(
+    image("network.png")
+)
 
 #grid(columns: 1fr, gutter: 1em)[
   #image("Screenshot_20250422_230254.png", width: 50%)
